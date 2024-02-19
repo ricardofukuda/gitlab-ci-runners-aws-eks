@@ -1,0 +1,89 @@
+stages:
+  - build
+  - test
+  - deploy
+
+variables:
+  KUBERNETES_SERVICE_ACCOUNT_OVERWRITE: gitlab-ci-runners-app # to guarantee permissions to the 'app' namespace
+
+build:
+  stage: build
+  image:
+    name: gcr.io/kaniko-project/executor:v1.14.0-debug
+  variables:
+    AWS_SDK_LOAD_CONFIG: "true"
+  only:
+  - main
+  - developer
+  - release-*
+  - merge_request
+#  rules:
+#    - changes:
+#      - Dockerfile
+  script:
+    - /kaniko/executor
+      --context "${CI_PROJECT_DIR}"
+      --dockerfile "${CI_PROJECT_DIR}/Dockerfile"
+      --destination "123456789.dkr.ecr.us-east-1.amazonaws.com/app:$(sha1sum Dockerfile | head -c 16)"
+
+test website:
+  stage: test
+  image: node
+  cache:
+    key: ${CI_COMMIT_REF_SLUG} #references the current branch
+    paths:
+      - node_modules/
+      - package-lock.json
+  only:
+  - main
+  - developer
+  - release-*
+  - merge_request
+  before_script:
+    - cd ./src
+    - npm install
+  script:
+    - npm run start &
+    - sleep 5
+    - curl "http://localhost:3000" # test if the site is accessible
+
+.deploy_template: &deploy
+  image: 123456789.dkr.ecr.us-east-1.amazonaws.com/gitlab-ci-runners:latest
+  script:
+    - helm upgrade --install --namespace ${ENVIRONMENT} --set image.tag=$(sha1sum Dockerfile | head -c 16) --wait --atomic --timeout 300s hello-world helm/hello-world/
+  needs:
+    - test website
+
+deploy production:
+  <<: *deploy
+  stage: deploy
+  only:
+    - main
+  variables:
+    ENVIRONMENT: prod
+  environment:
+    name: production
+    url: "http://hello-world-production:3000"
+
+deploy developer:
+  <<: *deploy
+  stage: deploy
+  only:
+    - developer
+  variables:
+    ENVIRONMENT: dev
+  environment:
+    name: developer
+    url: "http://hello-world-developer:3000"
+
+deploy homolog:
+  <<: *deploy
+  stage: deploy
+  only:
+    - homolog
+  variables:
+    ENVIRONMENT: hml
+  environment:
+    name: homolog
+    url: "http://hello-world-homolog:3000"
+
